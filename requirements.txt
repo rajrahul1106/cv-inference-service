@@ -1,0 +1,17 @@
+# ─────────────────────────────────────────────────────
+# Day 1 dependencies only
+# We add more as we build (celery, ultralytics, mediapipe, etc.)
+# ─────────────────────────────────────────────────────
+
+# Web framework
+fastapi==0.115.0
+uvicorn[standard]==0.32.0
+
+# Configuration (reads .env file)
+pydantic==2.9.2
+pydantic-settings==2.6.0
+
+# Database (async PostgreSQL)
+sqlalchemy[asyncio]==2.0.36
+asyncpg==0.30.0
+alembic==1.13.3

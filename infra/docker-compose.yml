@@ -1,0 +1,63 @@
+# ─────────────────────────────────────────────────────
+# docker-compose.yml
+# Day 1: postgres + redis only
+# Day 5+: we'll add api, worker, frontend, prometheus
+# ─────────────────────────────────────────────────────
+
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: cv_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: cvuser
+      POSTGRES_PASSWORD: cvpass
+      POSTGRES_DB: cv_inference
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - cv_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cvuser -d cv_inference"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: cv_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - cv_network
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+# ─────────────────────────────────────────────────────
+# Named volumes (data persists across container restarts)
+# ─────────────────────────────────────────────────────
+volumes:
+  postgres_data:
+    name: cv_postgres_data
+  redis_data:
+    name: cv_redis_data
+
+# ─────────────────────────────────────────────────────
+# Shared network (allows containers to reach each other by name)
+# ─────────────────────────────────────────────────────
+networks:
+  cv_network:
+    name: cv_network
+    driver: bridge
