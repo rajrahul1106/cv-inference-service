@@ -5,12 +5,14 @@ This file is what uvicorn imports and runs. It creates the FastAPI app
 instance, configures it (title, version, OpenAPI docs), and mounts route
 handlers.
 
-Day 1: only /health endpoint.
-Day 2+: we'll mount /api/v1/jobs, /ws/jobs/{id}, /metrics.
+Day 2: /health + /ready via the system router (api/routes/health.py).
+Day 3+: we'll mount /api/v1/jobs, /ws/jobs/{id}, /metrics.
 """
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
+from api.routes import health
 
 
 # ─────────────────────────────────────────────────────
@@ -39,18 +41,9 @@ app.add_middleware(
 
 
 # ─────────────────────────────────────────────────────
-# Health endpoint (Day 1 deliverable)
+# System routes: /health (liveness) + /ready (readiness)
 # ─────────────────────────────────────────────────────
-@app.get("/health", tags=["system"])
-async def health():
-    """
-    Liveness probe.
-
-    Returns 200 OK if the API process is running. Does not check
-    downstream dependencies (postgres, redis). For that, use /ready
-    (added in Day 2 once we have the DB connection).
-    """
-    return {"status": "ok", "service": "cv-inference-api", "version": "0.1.0"}
+app.include_router(health.router)
 
 
 # ─────────────────────────────────────────────────────
