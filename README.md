@@ -1,0 +1,44 @@
+# Distributed CV Inference Service
+
+Production-grade distributed microservice for computer vision inference. Built with FastAPI, Celery, Redis, PostgreSQL, and Docker Compose.
+
+**Status:** In active development (Days 1-4 complete out of 14).
+
+## Architecture
+
+- **FastAPI gateway** - accepts job submissions, exposes REST + WebSocket endpoints
+- **Redis broker** - task queue between API and workers
+- **Celery workers** - pull jobs, run ML inference (mock inference currently; YOLOv8, MediaPipe, and fire detection coming)
+- **PostgreSQL 16** - persistent job and result storage with JSONB detections
+- **Alembic** - reversible database migrations
+- **Docker Compose** - multi-service orchestration
+
+## Progress
+
+- [x] Day 1: Project scaffolding, Docker Compose, health endpoints
+- [x] Day 2: Async SQLAlchemy 2.0 data layer, Alembic migrations, readiness probes
+- [x] Day 3: Jobs REST API (submit, get, list) with Pydantic v2 validation
+- [x] Day 4: Celery worker wired for end-to-end job processing
+- [ ] Day 5: Real YOLOv8 inference
+- [ ] Day 6: MediaPipe face detection + fire detection
+- [ ] Day 7: Model registry with multi-model routing
+- [ ] Day 8-9: WebSocket real-time updates via Redis pub/sub
+- [ ] Day 10-11: Prometheus metrics + structured logging
+- [ ] Day 12-13: React dashboard
+- [ ] Day 14: Load testing, benchmarks, demo
+
+## Local Development
+
+```bash
+docker compose -f infra/docker-compose.yml up -d
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+alembic upgrade head
+uvicorn api.main:app --reload --port 8000
+celery -A workers.celery_app worker --loglevel=info --concurrency=2
+```
+
+## Tech Stack
+
+Python 3.13 · FastAPI 0.115 · SQLAlchemy 2.0 async · Alembic · Pydantic v2 · Celery 5.4 · Redis 7.4 · PostgreSQL 16 · Docker Compose
