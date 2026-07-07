@@ -15,3 +15,8 @@ pydantic-settings==2.6.0
 sqlalchemy[asyncio]==2.0.36
 asyncpg==0.30.0
 alembic==1.13.3
+
+# Queue / workers (Celery + Redis broker, sync DB driver for workers)
+celery==5.4.0
+redis==5.2.0
+psycopg2-binary==2.9.10

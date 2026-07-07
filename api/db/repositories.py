@@ -17,6 +17,7 @@ from uuid import UUID
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 from sqlalchemy.sql import func
 
 from api.db.models import Job, JobStatus, Result
@@ -40,6 +41,22 @@ class JobRepository:
         """Fetch a job by primary key, or ``None`` if it does not exist."""
         return await self.session.get(Job, job_id)
 
+    async def get_by_id_with_result(self, job_id: UUID) -> Optional[Job]:
+        """Fetch a job by primary key with its ``result`` eagerly loaded.
+
+        ``get_by_id`` uses ``session.get`` and loads no relationships. Async
+        SQLAlchemy forbids implicit lazy loads, so any handler that serializes
+        ``Job.result`` (the GET-by-id and list endpoints) must eager-load it up
+        front — that is what ``selectinload`` does here.
+        """
+        stmt = (
+            select(Job)
+            .options(selectinload(Job.result))
+            .where(Job.id == job_id)
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
     async def list(
         self,
         status: Optional[JobStatus] = None,
@@ -49,6 +66,7 @@ class JobRepository:
         """List jobs newest-first, optionally filtered by status, with paging."""
         stmt = (
             select(Job)
+            .options(selectinload(Job.result))
             .order_by(Job.created_at.desc())
             .limit(limit)
             .offset(offset)
@@ -58,6 +76,14 @@ class JobRepository:
 
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
+
+    async def count(self, status: Optional[JobStatus] = None) -> int:
+        """Count jobs, optionally filtered by status (drives list pagination)."""
+        stmt = select(func.count()).select_from(Job)
+        if status is not None:
+            stmt = stmt.where(Job.status == status)
+        result = await self.session.execute(stmt)
+        return result.scalar_one()
 
     async def update_status(
         self,

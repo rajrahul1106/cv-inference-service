@@ -12,7 +12,7 @@ Day 3+: we'll mount /api/v1/jobs, /ws/jobs/{id}, /metrics.
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from api.routes import health
+from api.routes import health, jobs
 
 
 # ─────────────────────────────────────────────────────
@@ -44,6 +44,12 @@ app.add_middleware(
 # System routes: /health (liveness) + /ready (readiness)
 # ─────────────────────────────────────────────────────
 app.include_router(health.router)
+
+
+# ─────────────────────────────────────────────────────
+# API routes: /api/v1/jobs (submit, get, list)
+# ─────────────────────────────────────────────────────
+app.include_router(jobs.router)
 
 
 # ─────────────────────────────────────────────────────
