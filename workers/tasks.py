@@ -1,17 +1,17 @@
 """
-Celery tasks: the inference base class and the (currently mock) inference task.
+Celery tasks: the inference base class and the inference task.
 
 Workers are synchronous (Celery prefork), so DB access here uses a *sync*
 SQLAlchemy engine/session — deliberately separate from the API's async engine in
 api/db/database.py. (See the Day 4 plan for why sync-in-workers beats
 async-everywhere.)
 
-Day 4 scope: run_inference is a mock — it flips job status and writes a fake
-Result after a short sleep. Real ML inference replaces the body on Day 5.
+run_inference downloads the input image, runs the per-process-cached model
+(workers/model_registry.py) over it, and stores the detections. It runs real
+YOLOv8 object detection as of Day 5.
 """
 
 import logging
-import time
 from typing import Optional
 from uuid import UUID
 
@@ -24,6 +24,8 @@ from sqlalchemy.pool import NullPool
 from api.config import settings
 from api.db.models import Job, JobStatus, Result
 from workers.celery_app import app
+from workers.model_registry import get_model
+from workers.storage import cleanup_image, download_image, ensure_dirs
 
 logger = logging.getLogger(__name__)
 
@@ -89,11 +91,6 @@ class InferenceTask(Task):
     retry_jitter = True
 
 
-# Mock output until real inference lands (Day 5).
-_MOCK_DETECTIONS = [{"label": "person", "confidence": 0.92, "bbox": [120, 80, 340, 520]}]
-_MOCK_INFERENCE_MS = 2000
-
-
 @app.task(base=InferenceTask, bind=True, name="inference.run")
 def run_inference(
     self,
@@ -102,20 +99,27 @@ def run_inference(
     input_url: str,
     options: dict,
 ) -> dict:
-    """Process one inference job (mock): PROCESSING → sleep → Result → COMPLETED.
+    """Process one inference job: PROCESSING → download → predict → COMPLETED.
 
-    On any error the job is marked FAILED and the exception re-raised so Celery
-    records the failure. The mock raises none of ``autoretry_for``'s exceptions,
-    so there is no FAILED-then-retried conflict today; once Day 5 introduces real
-    retryable errors, failure-marking should move to an ``on_failure`` hook that
-    fires only after retries are exhausted.
+    On any error the job is marked FAILED — with a stage-prefixed message so
+    download vs inference failures are distinguishable — and the *original*
+    exception is re-raised, preserving its type so ``InferenceTask``'s
+    ``autoretry_for=(ConnectionError, TimeoutError)`` still fires for transient
+    errors. The downloaded image is always cleaned up in ``finally``.
+
+    Note: a retryable error both marks FAILED and retries, so a retried job can
+    briefly flap FAILED→PROCESSING before its terminal state. Deferring FAILED
+    marking to an on_failure hook (fires only after retries exhaust) is the clean
+    fix; it lives in the author-owned retry logic and is out of scope here.
     """
     job_uuid = UUID(job_id)
     engine = get_sync_engine()
+    image_path: Optional[str] = None
+    stage = "processing"
 
     try:
-        # 1) Mark PROCESSING in its own transaction so the state is visible
-        #    (e.g. to GET /jobs/{id}) while the work below runs.
+        # Mark PROCESSING in its own transaction so the state is visible
+        # (e.g. to GET /jobs/{id}) while inference runs.
         with Session(engine) as session:
             _set_job_status(
                 session,
@@ -127,18 +131,29 @@ def run_inference(
             session.commit()
         logger.info("job %s processing on %s", job_id, self.request.hostname)
 
-        # 2) Simulate inference work (becomes a real model call on Day 5).
-        time.sleep(2)
+        # Download the input image (transient working file).
+        ensure_dirs()
+        stage = "download"
+        image_path = download_image(input_url, settings.upload_dir)
 
-        # 3) Persist the result and mark COMPLETED in one transaction.
+        # Run inference with the per-process-cached model.
+        stage = "inference"
+        model = get_model(model_type)
+        result = model.predict(
+            image_path,
+            confidence_threshold=options.get("confidence_threshold", 0.25),
+        )
+
+        # Persist the result and mark COMPLETED in one transaction.
+        stage = "persist"
         with Session(engine) as session:
             session.add(
                 Result(
                     job_id=job_uuid,
-                    detections=_MOCK_DETECTIONS,
+                    detections=result.detections,
                     annotated_url=None,
-                    inference_ms=_MOCK_INFERENCE_MS,
-                    model_version="mock-1.0",
+                    inference_ms=result.inference_ms,
+                    model_version=result.model_version,
                 )
             )
             _set_job_status(
@@ -148,16 +163,21 @@ def run_inference(
                 completed_at=func.now(),
             )
             session.commit()
-        logger.info("job %s completed", job_id)
+        logger.info(
+            "job %s completed: %d detection(s) in %d ms",
+            job_id,
+            len(result.detections),
+            result.inference_ms,
+        )
 
         return {
             "job_id": job_id,
             "status": "completed",
-            "inference_ms": _MOCK_INFERENCE_MS,
+            "inference_ms": result.inference_ms,
         }
 
     except Exception as exc:
-        logger.error("job %s failed: %s", job_id, exc)
+        logger.error("job %s failed during %s: %s", job_id, stage, exc)
         # Mark FAILED defensively: a secondary error here (e.g. DB down) must be
         # logged, not raised over the original failure the client cares about.
         try:
@@ -167,9 +187,12 @@ def run_inference(
                     job_uuid,
                     JobStatus.FAILED,
                     completed_at=func.now(),
-                    error_message=str(exc),
+                    error_message=f"{stage} error: {exc}",
                 )
                 session.commit()
         except Exception:
             logger.exception("could not mark job %s FAILED", job_id)
         raise
+    finally:
+        if image_path is not None:
+            cleanup_image(image_path)

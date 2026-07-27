@@ -20,3 +20,10 @@ alembic==1.13.3
 celery==5.4.0
 redis==5.2.0
 psycopg2-binary==2.9.10
+
+# ML inference (YOLOv8) + image I/O
+# NOTE: ultralytics pulls torch/torchvision/numpy transitively (large, unpinned).
+ultralytics==8.3.30
+opencv-python-headless==4.10.0.84
+pillow==10.4.0
+requests==2.32.3
