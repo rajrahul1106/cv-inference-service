@@ -2,13 +2,13 @@
 
 Production-grade distributed microservice for computer vision inference. Built with FastAPI, Celery, Redis, PostgreSQL, and Docker Compose.
 
-**Status:** In active development (Days 1-4 complete out of 14).
+**Status:** In active development (Days 1-5 complete out of 14).
 
 ## Architecture
 
 - **FastAPI gateway** - accepts job submissions, exposes REST + WebSocket endpoints
 - **Redis broker** - task queue between API and workers
-- **Celery workers** - pull jobs, run ML inference (mock inference currently; YOLOv8, MediaPipe, and fire detection coming)
+- **Celery workers** - pull jobs, run ML inference (YOLOv8 object detection live; MediaPipe face + fire detection coming)
 - **PostgreSQL 16** - persistent job and result storage with JSONB detections
 - **Alembic** - reversible database migrations
 - **Docker Compose** - multi-service orchestration
@@ -19,7 +19,7 @@ Production-grade distributed microservice for computer vision inference. Built w
 - [x] Day 2: Async SQLAlchemy 2.0 data layer, Alembic migrations, readiness probes
 - [x] Day 3: Jobs REST API (submit, get, list) with Pydantic v2 validation
 - [x] Day 4: Celery worker wired for end-to-end job processing
-- [ ] Day 5: Real YOLOv8 inference
+- [x] Day 5: Real YOLOv8 inference — per-process model registry, image download/cleanup (~186ms warm inference latency)
 - [ ] Day 6: MediaPipe face detection + fire detection
 - [ ] Day 7: Model registry with multi-model routing
 - [ ] Day 8-9: WebSocket real-time updates via Redis pub/sub
