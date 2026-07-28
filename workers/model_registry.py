@@ -19,6 +19,8 @@ import logging
 import time
 
 from workers.inference.base import InferenceModel
+from workers.inference.face_detector import FaceDetector
+from workers.inference.fire_detector import FireDetector
 from workers.inference.yolo_detector import YOLODetector
 
 logger = logging.getLogger(__name__)
@@ -26,9 +28,12 @@ logger = logging.getLogger(__name__)
 # model_type -> loaded model, populated lazily by get_model().
 _MODELS: dict[str, InferenceModel] = {}
 
-# model_type -> the class that implements it. Extended on Day 7 (face, fire).
+# model_type -> the class that implements it. Adding a model type is a one-line
+# change here; get_model() routing and the task code stay untouched.
 _MODEL_CLASSES: dict[str, type[InferenceModel]] = {
     "yolo": YOLODetector,
+    "face": FaceDetector,
+    "fire": FireDetector,
 }
 
 

@@ -27,3 +27,6 @@ ultralytics==8.3.30
 opencv-python-headless==4.10.0.84
 pillow==10.4.0
 requests==2.32.3
+
+# Face detection
+mediapipe==0.10.35
