@@ -36,8 +36,29 @@ pip install -r requirements.txt
 cp .env.example .env
 alembic upgrade head
 uvicorn api.main:app --reload --port 8000
-celery -A workers.celery_app worker --loglevel=info --concurrency=2
+celery -A workers.celery_app worker --loglevel=info --pool=solo
 ```
+
+> **macOS note:** the worker runs with `--pool=solo` — tasks execute in the main
+> process with no forking. On macOS, Celery's default prefork pool crashes with
+> SIGSEGV when MediaPipe initializes its native C++ threading inside a forked
+> child. Solo pool avoids this by not forking, at the cost of single-task
+> concurrency. On **Linux**, the default prefork pool works fine; use
+> `--concurrency=N` there for real parallelism.
+
+### Troubleshooting
+
+**Running prefork on macOS (e.g. to test concurrency):** disable Apple's
+Objective-C fork-safety guard before launching the worker:
+
+```bash
+OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES \
+  celery -A workers.celery_app worker --loglevel=info --concurrency=2
+```
+
+This is a workaround, not a fix — it silences the check that would otherwise
+abort the forked child. Prefer `--pool=solo` for everyday macOS development, and
+use Linux (or the Docker worker image) for genuine prefork concurrency.
 
 ## Tech Stack
 
