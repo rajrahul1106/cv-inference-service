@@ -20,7 +20,7 @@ Production-grade distributed microservice for computer vision inference. Built w
 - [x] Day 3: Jobs REST API (submit, get, list) with Pydantic v2 validation
 - [x] Day 4: Celery worker wired for end-to-end job processing
 - [x] Day 5: Real YOLOv8 inference — per-process model registry, image download/cleanup. Warm inference pipeline latency: ~186ms end-to-end (includes disk read, preprocessing, model forward pass, and postprocessing). Raw YOLO forward pass alone is ~48ms.
-- [x] Day 6: MediaPipe face detection (Tasks API) + placeholder fire detector — both behind the shared InferenceModel interface, routed by the model registry
+- [x] Day 6: All three models live behind the shared InferenceModel interface — YOLOv8 object detection, MediaPipe face detection, and a YOLOv8-based fire detection placeholder — routed by the model registry
 - [ ] Day 7: Model registry with multi-model routing
 - [ ] Day 8-9: WebSocket real-time updates via Redis pub/sub
 - [ ] Day 10-11: Prometheus metrics + structured logging
