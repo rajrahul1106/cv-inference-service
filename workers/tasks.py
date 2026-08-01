@@ -11,10 +11,12 @@ run_inference downloads the input image, runs the per-process-cached model
 YOLOv8 object detection as of Day 5.
 """
 
+import json
 import logging
 from typing import Optional
 from uuid import UUID
 
+import redis
 from celery import Task
 from sqlalchemy import create_engine, func
 from sqlalchemy.engine import Engine
@@ -22,6 +24,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
 
 from api.config import settings
+from api.core.redis_client import channel_for
 from api.db.models import Job, JobStatus, Result
 from workers.celery_app import app
 from workers.model_registry import get_model
@@ -53,6 +56,36 @@ def get_sync_engine() -> Engine:
     if _engine is None:
         _engine = create_engine(_sync_database_url(), poolclass=NullPool, future=True)
     return _engine
+
+
+# ─────────────────────────────────────────────────────────────
+# Status publishing (Redis pub/sub) — sync, fire-and-forget
+# ─────────────────────────────────────────────────────────────
+_redis_publisher: Optional["redis.Redis"] = None
+
+
+def get_redis_publisher() -> "redis.Redis":
+    """Return a process-local *sync* Redis client, created lazily on first use.
+
+    Lazy like get_sync_engine() so the client (and its connection pool) is built
+    inside the forked worker child, not the parent — fork-safe.
+    """
+    global _redis_publisher
+    if _redis_publisher is None:
+        _redis_publisher = redis.from_url(settings.redis_url)
+    return _redis_publisher
+
+
+def _publish_status(job_id: UUID, event: dict) -> None:
+    """Publish a status event to the job's channel. Fire-and-forget: never raises.
+
+    Pub/sub is best-effort — a Redis hiccup must not fail the inference job — so
+    any error is logged as a warning and swallowed.
+    """
+    try:
+        get_redis_publisher().publish(channel_for(job_id), json.dumps(event))
+    except Exception as exc:
+        logger.warning("failed to publish status for job %s: %s", job_id, exc)
 
 
 def _set_job_status(
@@ -130,6 +163,15 @@ def run_inference(
             )
             session.commit()
         logger.info("job %s processing on %s", job_id, self.request.hostname)
+        _publish_status(
+            job_uuid,
+            {
+                "event": "status_change",
+                "status": "processing",
+                "worker_id": self.request.hostname,
+                "inference_ms": None,
+            },
+        )
 
         # Download the input image (transient working file).
         ensure_dirs()
@@ -169,6 +211,15 @@ def run_inference(
             len(result.detections),
             result.inference_ms,
         )
+        _publish_status(
+            job_uuid,
+            {
+                "event": "status_change",
+                "status": "completed",
+                "inference_ms": result.inference_ms,
+                "detections_count": len(result.detections),
+            },
+        )
 
         return {
             "job_id": job_id,
@@ -190,6 +241,14 @@ def run_inference(
                     error_message=f"{stage} error: {exc}",
                 )
                 session.commit()
+            _publish_status(
+                job_uuid,
+                {
+                    "event": "status_change",
+                    "status": "failed",
+                    "error": f"{stage} error: {exc}",
+                },
+            )
         except Exception:
             logger.exception("could not mark job %s FAILED", job_id)
         raise

@@ -1,18 +1,89 @@
 """
 FastAPI application entry point.
 
-This file is what uvicorn imports and runs. It creates the FastAPI app
-instance, configures it (title, version, OpenAPI docs), and mounts route
-handlers.
-
-Day 2: /health + /ready via the system router (api/routes/health.py).
-Day 3+: we'll mount /api/v1/jobs, /ws/jobs/{id}, /metrics.
+Creates the app, mounts routers, and runs a lifespan-managed background task that
+subscribes to Redis pub/sub (``job.status.*``) and fans status events out to
+WebSocket clients via the shared ConnectionManager. That background task is the
+bridge decoupling workers from WebSocket clients entirely (SPEC §8).
 """
+
+import asyncio
+import json
+import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from uuid import UUID
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from redis.exceptions import RedisError
 
-from api.routes import health, jobs
+from api.core.redis_client import CHANNEL_PATTERN, get_redis
+from api.routes import health, jobs, websocket
+from api.websocket import connection_manager
+
+logger = logging.getLogger(__name__)
+
+# Backoff before the subscriber retries after a Redis error.
+_SUBSCRIBER_RETRY_SECONDS = 2
+
+
+async def _status_subscriber(redis_client) -> None:
+    """Fan Redis status events out to WebSocket clients until cancelled.
+
+    Pattern-subscribes to all job channels; for each message it parses the
+    job_id from the channel name and broadcasts the event to that job's local
+    WebSocket connections. Reconnects on Redis errors; exits on cancellation.
+    """
+    while True:
+        pubsub = redis_client.pubsub()
+        try:
+            await pubsub.psubscribe(CHANNEL_PATTERN)
+            logger.info("status subscriber listening on %s", CHANNEL_PATTERN)
+            async for message in pubsub.listen():
+                if message.get("type") != "pmessage":
+                    continue  # skip (p)subscribe confirmations
+                channel = message["channel"]
+                try:
+                    job_id = UUID(channel.rsplit(".", 1)[-1])
+                    event = json.loads(message["data"])
+                except (ValueError, TypeError, json.JSONDecodeError) as exc:
+                    logger.warning("dropping bad status message on %s: %s", channel, exc)
+                    continue
+                await connection_manager.broadcast(job_id, event)
+        except asyncio.CancelledError:
+            logger.info("status subscriber cancelled")
+            raise
+        except RedisError as exc:
+            logger.warning(
+                "status subscriber Redis error (%s); retrying in %ds",
+                exc,
+                _SUBSCRIBER_RETRY_SECONDS,
+            )
+            await asyncio.sleep(_SUBSCRIBER_RETRY_SECONDS)
+        finally:
+            try:
+                await pubsub.aclose()
+            except Exception:
+                pass
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """Start/stop the Redis→WebSocket status subscriber alongside the app."""
+    redis_client = get_redis()
+    subscriber = asyncio.create_task(_status_subscriber(redis_client))
+    logger.info("status subscriber started")
+    try:
+        yield
+    finally:
+        subscriber.cancel()
+        try:
+            await subscriber
+        except asyncio.CancelledError:
+            pass
+        await redis_client.aclose()
+        logger.info("status subscriber stopped")
 
 
 # ─────────────────────────────────────────────────────
@@ -25,6 +96,7 @@ app = FastAPI(
     docs_url="/docs",          # Swagger UI at /docs
     redoc_url="/redoc",        # ReDoc UI at /redoc
     openapi_url="/openapi.json",
+    lifespan=lifespan,
 )
 
 
@@ -41,15 +113,11 @@ app.add_middleware(
 
 
 # ─────────────────────────────────────────────────────
-# System routes: /health (liveness) + /ready (readiness)
+# Routers: system health, jobs API, and the WebSocket endpoint
 # ─────────────────────────────────────────────────────
 app.include_router(health.router)
-
-
-# ─────────────────────────────────────────────────────
-# API routes: /api/v1/jobs (submit, get, list)
-# ─────────────────────────────────────────────────────
 app.include_router(jobs.router)
+app.include_router(websocket.router)
 
 
 # ─────────────────────────────────────────────────────
