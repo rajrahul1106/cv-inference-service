@@ -2,7 +2,7 @@
 
 Production-grade distributed microservice for computer vision inference. Built with FastAPI, Celery, Redis, PostgreSQL, and Docker Compose.
 
-**Status:** In active development (Days 1-6 and 8-9 complete out of 14).
+**Status:** In active development (Days 1-9 complete out of 14).
 
 ## Architecture
 
@@ -21,7 +21,7 @@ Production-grade distributed microservice for computer vision inference. Built w
 - [x] Day 4: Celery worker wired for end-to-end job processing
 - [x] Day 5: Real YOLOv8 inference — per-process model registry, image download/cleanup. Warm inference pipeline latency: ~186ms end-to-end (includes disk read, preprocessing, model forward pass, and postprocessing). Raw YOLO forward pass alone is ~48ms.
 - [x] Day 6: All three models live behind the shared InferenceModel interface — YOLOv8 object detection, MediaPipe face detection, and a YOLOv8-based fire detection placeholder — routed by the model registry
-- [ ] Day 7: Model registry with multi-model routing
+- [x] Day 7: Model registry with multi-model routing — unified yolo/face/fire routing behind the InferenceModel interface (shipped in Days 5-6)
 - [x] Day 8-9: WebSocket real-time job status via Redis pub/sub — ConnectionManager + lifespan-managed background subscriber bridge; worker publishes each status transition
 - [ ] Day 10-11: Prometheus metrics + structured logging
 - [ ] Day 12-13: React dashboard
