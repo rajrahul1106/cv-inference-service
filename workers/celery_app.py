@@ -11,8 +11,10 @@ api<->workers import cycle.
 """
 
 from celery import Celery
+from celery.signals import setup_logging
 
 from api.config import settings
+from api.core.logging_config import configure_logging
 
 app = Celery(
     "cv_inference",
@@ -35,7 +37,21 @@ app.conf.update(
     worker_prefetch_multiplier=1,
     # Ack after completion so a crashed worker's task is redelivered, not lost.
     task_acks_late=True,
+    # Don't let Celery reconfigure the root logger — we own it (see below).
+    worker_hijack_root_logger=False,
+    # Don't hijack stdout/stderr; our JSON handler writes there directly.
+    worker_redirect_stdouts=False,
 )
+
+
+@setup_logging.connect
+def _configure_worker_logging(**kwargs: object) -> None:
+    """Install our JSON logging at worker startup.
+
+    Connecting to ``setup_logging`` tells Celery to skip its own logging setup
+    and use ours instead (structured JSON via api/core/logging_config.py).
+    """
+    configure_logging("cv-inference-worker")
 
 # Lazily discover workers.tasks on worker start (does not import it now).
 app.autodiscover_tasks(["workers"])

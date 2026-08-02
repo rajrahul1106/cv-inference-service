@@ -51,6 +51,9 @@ frontend/.vite/
 uploads/
 annotated/
 
+# Prometheus multiprocess metric files (per-process mmap, runtime data)
+prometheus_multiproc/
+
 # Coverage reports
 .coverage
 htmlcov/

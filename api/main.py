@@ -1,28 +1,33 @@
 """
 FastAPI application entry point.
 
-Creates the app, mounts routers, and runs a lifespan-managed background task that
-subscribes to Redis pub/sub (``job.status.*``) and fans status events out to
-WebSocket clients via the shared ConnectionManager. That background task is the
-bridge decoupling workers from WebSocket clients entirely (SPEC §8).
+Creates the app, configures structured JSON logging, mounts routers (including
+/metrics), and runs a lifespan-managed background task that subscribes to Redis
+pub/sub (``job.status.*``) and fans status events out to WebSocket clients via
+the shared ConnectionManager — the bridge decoupling workers from clients
+(SPEC §8).
 """
 
 import asyncio
 import json
-import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from uuid import UUID
 
+import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from redis.exceptions import RedisError
 
+from api.core.logging_config import configure_logging
 from api.core.redis_client import CHANNEL_PATTERN, get_redis
-from api.routes import health, jobs, websocket
+from api.routes import health, jobs, metrics, websocket
 from api.websocket import connection_manager
 
-logger = logging.getLogger(__name__)
+# Configure JSON logging before anything logs (import-time, per SPEC §9).
+configure_logging("cv-inference-api")
+
+logger = structlog.get_logger(__name__)
 
 # Backoff before the subscriber retries after a Redis error.
 _SUBSCRIBER_RETRY_SECONDS = 2
@@ -39,7 +44,7 @@ async def _status_subscriber(redis_client) -> None:
         pubsub = redis_client.pubsub()
         try:
             await pubsub.psubscribe(CHANNEL_PATTERN)
-            logger.info("status subscriber listening on %s", CHANNEL_PATTERN)
+            logger.info("status_subscriber_listening", pattern=CHANNEL_PATTERN)
             async for message in pubsub.listen():
                 if message.get("type") != "pmessage":
                     continue  # skip (p)subscribe confirmations
@@ -48,17 +53,19 @@ async def _status_subscriber(redis_client) -> None:
                     job_id = UUID(channel.rsplit(".", 1)[-1])
                     event = json.loads(message["data"])
                 except (ValueError, TypeError, json.JSONDecodeError) as exc:
-                    logger.warning("dropping bad status message on %s: %s", channel, exc)
+                    logger.warning(
+                        "status_message_dropped", channel=channel, error=str(exc)
+                    )
                     continue
                 await connection_manager.broadcast(job_id, event)
         except asyncio.CancelledError:
-            logger.info("status subscriber cancelled")
+            logger.info("status_subscriber_cancelled")
             raise
         except RedisError as exc:
             logger.warning(
-                "status subscriber Redis error (%s); retrying in %ds",
-                exc,
-                _SUBSCRIBER_RETRY_SECONDS,
+                "status_subscriber_redis_error",
+                error=str(exc),
+                retry_seconds=_SUBSCRIBER_RETRY_SECONDS,
             )
             await asyncio.sleep(_SUBSCRIBER_RETRY_SECONDS)
         finally:
@@ -73,7 +80,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Start/stop the Redis→WebSocket status subscriber alongside the app."""
     redis_client = get_redis()
     subscriber = asyncio.create_task(_status_subscriber(redis_client))
-    logger.info("status subscriber started")
+    logger.info("status_subscriber_started")
     try:
         yield
     finally:
@@ -83,7 +90,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         except asyncio.CancelledError:
             pass
         await redis_client.aclose()
-        logger.info("status subscriber stopped")
+        logger.info("status_subscriber_stopped")
 
 
 # ─────────────────────────────────────────────────────
@@ -113,11 +120,12 @@ app.add_middleware(
 
 
 # ─────────────────────────────────────────────────────
-# Routers: system health, jobs API, and the WebSocket endpoint
+# Routers: health, jobs API, WebSocket endpoint, and /metrics
 # ─────────────────────────────────────────────────────
 app.include_router(health.router)
 app.include_router(jobs.router)
 app.include_router(websocket.router)
+app.include_router(metrics.router)
 
 
 # ─────────────────────────────────────────────────────

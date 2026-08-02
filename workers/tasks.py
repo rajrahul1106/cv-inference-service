@@ -12,11 +12,11 @@ YOLOv8 object detection as of Day 5.
 """
 
 import json
-import logging
 from typing import Optional
 from uuid import UUID
 
 import redis
+import structlog
 from celery import Task
 from sqlalchemy import create_engine, func
 from sqlalchemy.engine import Engine
@@ -26,11 +26,12 @@ from sqlalchemy.pool import NullPool
 from api.config import settings
 from api.core.redis_client import channel_for
 from api.db.models import Job, JobStatus, Result
+from api.metrics.prometheus import INFERENCE_DURATION, JOBS_COMPLETED
 from workers.celery_app import app
 from workers.model_registry import get_model
 from workers.storage import cleanup_image, download_image, ensure_dirs
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -85,7 +86,7 @@ def _publish_status(job_id: UUID, event: dict) -> None:
     try:
         get_redis_publisher().publish(channel_for(job_id), json.dumps(event))
     except Exception as exc:
-        logger.warning("failed to publish status for job %s: %s", job_id, exc)
+        logger.warning("status_publish_failed", job_id=str(job_id), error=str(exc))
 
 
 def _set_job_status(
@@ -162,7 +163,7 @@ def run_inference(
                 worker_id=self.request.hostname,
             )
             session.commit()
-        logger.info("job %s processing on %s", job_id, self.request.hostname)
+        logger.info("job_processing", job_id=job_id, worker_id=self.request.hostname)
         _publish_status(
             job_uuid,
             {
@@ -206,10 +207,14 @@ def run_inference(
             )
             session.commit()
         logger.info(
-            "job %s completed: %d detection(s) in %d ms",
-            job_id,
-            len(result.detections),
-            result.inference_ms,
+            "job_completed",
+            job_id=job_id,
+            detections_count=len(result.detections),
+            duration_ms=result.inference_ms,
+        )
+        JOBS_COMPLETED.labels(model_type=model_type, status="completed").inc()
+        INFERENCE_DURATION.labels(model_type=model_type).observe(
+            result.inference_ms / 1000
         )
         _publish_status(
             job_uuid,
@@ -228,7 +233,9 @@ def run_inference(
         }
 
     except Exception as exc:
-        logger.error("job %s failed during %s: %s", job_id, stage, exc)
+        logger.error(
+            "job_failed", job_id=job_id, stage=stage, error=str(exc), exc_info=True
+        )
         # Mark FAILED defensively: a secondary error here (e.g. DB down) must be
         # logged, not raised over the original failure the client cares about.
         try:
@@ -249,8 +256,9 @@ def run_inference(
                     "error": f"{stage} error: {exc}",
                 },
             )
+            JOBS_COMPLETED.labels(model_type=model_type, status="failed").inc()
         except Exception:
-            logger.exception("could not mark job %s FAILED", job_id)
+            logger.exception("job_failed_mark_error", job_id=job_id)
         raise
     finally:
         if image_path is not None:

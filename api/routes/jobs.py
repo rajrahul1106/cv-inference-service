@@ -12,10 +12,10 @@ POST persists a QUEUED job and enqueues the ``inference.run`` Celery task
 task, but not stored (there is no column for them yet).
 """
 
-import logging
 from typing import Optional
 from uuid import UUID
 
+import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,6 +23,7 @@ from api.core.celery_client import enqueue_inference
 from api.db.database import get_db
 from api.db.models import JobStatus
 from api.db.repositories import JobRepository
+from api.metrics.prometheus import JOBS_SUBMITTED
 from api.schemas.job import (
     JobCreate,
     JobListResponse,
@@ -32,7 +33,7 @@ from api.schemas.job import (
 
 router = APIRouter(prefix="/api/v1/jobs", tags=["jobs"])
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 # Placeholder; a real estimate would come from current queue depth.
 ESTIMATED_WAIT_SECONDS = 5
@@ -66,6 +67,10 @@ async def submit_job(
             "status": JobStatus.QUEUED,
         }
     )
+    JOBS_SUBMITTED.labels(model_type=payload.model_type.value).inc()
+    logger.info(
+        "job_submitted", job_id=str(job.id), model_type=payload.model_type.value
+    )
 
     try:
         enqueue_inference(
@@ -75,7 +80,7 @@ async def submit_job(
             options=payload.options,
         )
     except Exception as exc:
-        logger.error("failed to enqueue job %s: %s", job.id, exc)
+        logger.error("job_enqueue_failed", job_id=str(job.id), error=str(exc))
         await repo.update_status(
             job.id, JobStatus.FAILED, error=f"enqueue failed: {exc}"
         )

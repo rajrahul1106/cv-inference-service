@@ -7,14 +7,15 @@ status events are pushed by the background subscriber (api/main.py) via the
 ConnectionManager, which keeps workers fully decoupled from clients (SPEC §8).
 """
 
-import logging
 from uuid import UUID
 
+import structlog
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from api.metrics.prometheus import WEBSOCKET_CONNECTIONS
 from api.websocket import connection_manager
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 router = APIRouter()
 
@@ -32,10 +33,11 @@ async def job_status_ws(websocket: WebSocket, job_id: str) -> None:
         # than a bare handshake rejection.
         await websocket.accept()
         await websocket.close(code=_WS_POLICY_VIOLATION, reason="invalid job_id")
-        logger.info("ws rejected: invalid job_id %r", job_id)
+        logger.info("ws_rejected_invalid_job_id", job_id=job_id)
         return
 
     await connection_manager.connect(job_uuid, websocket)
+    WEBSOCKET_CONNECTIONS.inc()
     try:
         # Keep the socket open. We don't act on inbound frames, but receiving
         # lets us detect client disconnects and tolerates client-side pings.
@@ -44,6 +46,7 @@ async def job_status_ws(websocket: WebSocket, job_id: str) -> None:
     except WebSocketDisconnect:
         pass  # normal client close
     except Exception as exc:
-        logger.error("ws error job=%s: %s", job_uuid, exc)
+        logger.error("ws_error", job_id=str(job_uuid), error=str(exc))
     finally:
+        WEBSOCKET_CONNECTIONS.dec()
         await connection_manager.disconnect(job_uuid, websocket)
