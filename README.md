@@ -2,7 +2,7 @@
 
 Production-grade distributed microservice for computer vision inference. Built with FastAPI, Celery, Redis, PostgreSQL, and Docker Compose.
 
-**Status:** In active development (Days 1-11 complete out of 14).
+**Status:** In active development (Days 1-13 complete out of 14).
 
 ## Architecture
 
@@ -24,7 +24,7 @@ Production-grade distributed microservice for computer vision inference. Built w
 - [x] Day 7: Model registry with multi-model routing — unified yolo/face/fire routing behind the InferenceModel interface (shipped in Days 5-6)
 - [x] Day 8-9: WebSocket real-time job status via Redis pub/sub — ConnectionManager + lifespan-managed background subscriber bridge; worker publishes each status transition
 - [x] Day 10-11: Prometheus metrics + structured logging — /metrics aggregating API + worker processes (multiprocess mode), structlog JSON logs with job_id correlation across both
-- [ ] Day 12-13: React dashboard
+- [x] Day 12-13: React dashboard — image URL input, real-time status via WebSocket, and a canvas overlay drawing bounding boxes over the source image
 - [ ] Day 14: Load testing, benchmarks, demo
 
 ## Local Development
@@ -45,6 +45,19 @@ celery -A workers.celery_app worker --loglevel=info --pool=solo
 > child. Solo pool avoids this by not forking, at the cost of single-task
 > concurrency. On **Linux**, the default prefork pool works fine; use
 > `--concurrency=N` there for real parallelism.
+
+### Running the Frontend
+
+The React dashboard lives in `frontend/` and reaches the API through Vite's dev
+proxy, so start the API on :8000 first, then:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Then open http://localhost:5173.
 
 ### Troubleshooting
 
