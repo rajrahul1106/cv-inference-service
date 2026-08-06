@@ -171,9 +171,9 @@ export default function UploadCard({ onSubmit, onSubmitFile }) {
             onChange={(e) => {
               const next = e.target.value;
               setModelType(next);
-              // Face scores run lower than YOLO's; default the slider to a
-              // face-appropriate 0.3 (still unchecked by default, like YOLO).
-              setThreshold(next === "face" ? 0.3 : 0.25);
+              // MediaPipe face scores run low (~0.1-0.2); default the slider to
+              // 0.1 for face (still unchecked by default, like YOLO).
+              setThreshold(next === "face" ? 0.1 : 0.25);
             }}
             className="w-full rounded-md border border-slate-300 px-3 py-2 focus:border-slate-500 focus:outline-none"
           >

@@ -181,13 +181,13 @@ def run_inference(
         stage = "download"
         image_path, image_is_temp = load_input_image(input_url, settings.upload_dir)
 
-        # Run inference with the per-process-cached model.
+        # Run inference with the per-process-cached model. Options pass straight
+        # through so each model applies its OWN default when confidence_threshold
+        # is absent (YOLO 0.25; face 0.0 — MediaPipe face scores run far lower, so
+        # a YOLO-scale threshold would drop real faces).
         stage = "inference"
         model = get_model(model_type)
-        result = model.predict(
-            image_path,
-            confidence_threshold=options.get("confidence_threshold", 0.25),
-        )
+        result = model.predict(image_path, **options)
 
         # Persist the result and mark COMPLETED in one transaction.
         stage = "persist"

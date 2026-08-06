@@ -42,10 +42,10 @@ _MODEL_FILENAME = "blaze_face_short_range.tflite"
 class FaceDetector(InferenceModel):
     """MediaPipe (Tasks API) BlazeFace short-range face detector."""
 
-    def __init__(self, min_detection_confidence: float = 0.3) -> None:
-        # 0.3 (below MediaPipe's 0.5 default): real-world images often contain
-        # non-portrait faces the model scores under 0.5 (e.g. bus.jpg's three
-        # faces), which a 0.5 floor drops entirely.
+    def __init__(self, min_detection_confidence: float = 0.1) -> None:
+        # MediaPipe face scores run low: bus.jpg's three faces score 0.12-0.21,
+        # so anything near YOLO's 0.25-0.5 range drops them entirely. 0.1 keeps
+        # real faces while avoiding the false positives that appear below ~0.1.
         self._min_confidence = min_detection_confidence
         self._model: Optional[mp_vision.FaceDetector] = None
 
