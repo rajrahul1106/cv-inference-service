@@ -54,6 +54,9 @@ annotated/
 # Prometheus multiprocess metric files (per-process mmap, runtime data)
 prometheus_multiproc/
 
+# Locust benchmark output (regenerate with scripts/run_benchmarks.sh)
+benchmarks/
+
 # Coverage reports
 .coverage
 htmlcov/

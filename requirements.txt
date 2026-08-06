@@ -32,6 +32,9 @@ requests==2.32.3
 # Face detection
 mediapipe==0.10.35
 
+# Load testing
+locust==2.32.4
+
 # Observability (metrics + structured logging)
 prometheus-client==0.21.0
 structlog==24.4.0
