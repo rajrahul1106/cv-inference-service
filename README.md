@@ -1,36 +1,95 @@
 # Distributed CV Inference Service
 
-Production-grade distributed microservice for computer vision inference. Built with FastAPI, Celery, Redis, PostgreSQL, and Docker Compose.
+A horizontally-scalable computer vision inference microservice: REST API in, Redis-queued Celery workers running real ML models, live status over WebSockets, Prometheus observability throughout.
 
-**Status:** In active development (Days 1-13 complete out of 14).
+![Demo](docs/demo.gif)
 
 ## Architecture
 
-- **FastAPI gateway** - accepts job submissions, exposes REST + WebSocket endpoints
-- **Redis** - Celery broker (task queue) + pub/sub channel for real-time status updates
-- **Celery workers** - pull jobs, run ML inference (YOLOv8 object detection and MediaPipe face detection live; fire detection is a flagged placeholder)
-- **PostgreSQL 16** - persistent job and result storage with JSONB detections
-- **Alembic** - reversible database migrations
-- **Docker Compose** - multi-service orchestration
+```mermaid
+%% All services run under Docker Compose (infra/docker-compose.yml).
+flowchart LR
+    subgraph client["Client"]
+        browser["React Dashboard<br/>(Vite, :5173)"]
+    end
 
-## Progress
+    subgraph api_layer["API layer"]
+        api["FastAPI Gateway<br/>REST + WebSocket + /metrics (:8000)"]
+    end
 
-- [x] Day 1: Project scaffolding, Docker Compose, health endpoints
-- [x] Day 2: Async SQLAlchemy 2.0 data layer, Alembic migrations, readiness probes
-- [x] Day 3: Jobs REST API (submit, get, list) with Pydantic v2 validation
-- [x] Day 4: Celery worker wired for end-to-end job processing
-- [x] Day 5: Real YOLOv8 inference — per-process model registry, image download/cleanup. Warm inference pipeline latency: ~186ms end-to-end (includes disk read, preprocessing, model forward pass, and postprocessing). Raw YOLO forward pass alone is ~48ms.
-- [x] Day 6: All three models live behind the shared InferenceModel interface — YOLOv8 object detection, MediaPipe face detection, and a YOLOv8-based fire detection placeholder — routed by the model registry
-- [x] Day 7: Model registry with multi-model routing — unified yolo/face/fire routing behind the InferenceModel interface (shipped in Days 5-6)
-- [x] Day 8-9: WebSocket real-time job status via Redis pub/sub — ConnectionManager + lifespan-managed background subscriber bridge; worker publishes each status transition
-- [x] Day 10-11: Prometheus metrics + structured logging — /metrics aggregating API + worker processes (multiprocess mode), structlog JSON logs with job_id correlation across both
-- [x] Day 12-13: React dashboard — image URL input, real-time status via WebSocket, and a canvas overlay drawing bounding boxes over the source image
-- [ ] Day 14: Load testing, benchmarks, demo
+    subgraph message_layer["Message layer"]
+        redis[("Redis 7.4<br/>Celery broker + pub/sub")]
+    end
+
+    subgraph worker_layer["Worker layer"]
+        worker["Celery Worker(s)<br/>YOLOv8 · MediaPipe face · fire<br/>(per-process model registry)"]
+    end
+
+    subgraph data_layer["Data layer"]
+        postgres[("PostgreSQL 16<br/>jobs + results (JSONB)")]
+    end
+
+    browser -- "HTTP: submit / list / get jobs" --> api
+    api -- "persist job, read results" --> postgres
+    api -- "enqueue inference.run" --> redis
+    redis -- "dequeue task" --> worker
+    worker -- "write result, update status" --> postgres
+    worker -- "publish status events<br/>(job.status.*)" --> redis
+    redis -. "pub/sub subscribe" .-> api
+    api -. "WebSocket push<br/>/ws/jobs/{id}" .-> browser
+```
+
+Diagram source: [docs/architecture.mmd](docs/architecture.mmd).
+
+## Tech Stack
+
+| Layer | Tech |
+|---|---|
+| API | FastAPI 0.115 (async), Pydantic v2 |
+| Data | PostgreSQL 16, SQLAlchemy 2.0 async, Alembic migrations |
+| Queue | Celery 5.4 on Redis 7.4 (broker + pub/sub) |
+| ML | ultralytics YOLOv8-nano, MediaPipe Tasks face detection, torch |
+| Real-time | FastAPI WebSockets + Redis pub/sub bridge |
+| Observability | prometheus-client (multiprocess mode), structlog JSON logs |
+| Frontend | React 18, Vite, Tailwind |
+| Infra | Docker Compose, Locust load testing |
+
+## Key Features
+
+- **Async job lifecycle** — `POST` returns `202` immediately; jobs flow queued → processing → completed/failed on worker pools, with retryable failures backed off exponentially with jitter.
+- **Three models, one interface** — YOLOv8 objects, MediaPipe faces, and a (placeholder) fire detector all implement `InferenceModel`; adding a model is one registry entry, task code untouched.
+- **Per-process model caching** — models load once per worker process (lazy, fork-safe), not per task: no repeated 1-3 s cold starts.
+- **Real-time updates without polling** — workers publish status to Redis pub/sub; a lifespan-managed subscriber in the API fans events out to WebSocket clients. Workers never know about sockets.
+- **Two input modes** — public image URL or direct multipart upload (validated, size-capped, served back for display).
+- **Production observability** — Prometheus counters/histograms aggregated across API *and* worker processes via multiprocess mode; structured JSON logs with `job_id` correlation end to end.
+
+## Performance
+
+Measured with the standardized [Locust](scripts/load_test.py) run ([scripts/run_benchmarks.sh](scripts/run_benchmarks.sh)): **50 concurrent users, spawn 5/s, 120 s**, 60/30/10 yolo/face/fire mix, against a single uvicorn process + a single `--pool=solo` worker on an M-series MacBook Air.
+
+**API layer** (job submits + status reads):
+
+| Metric | Value |
+|---|---|
+| Requests | 5,732 |
+| Failures | **0** |
+| Sustained throughput | **48.0 RPS** |
+| p50 / p95 / p99 latency | **400 / 470 / 650 ms** |
+
+**Worker inference** (Prometheus histogram, during the same run):
+
+| Model | Mean inference | Notes |
+|---|---|---|
+| yolo | 81 ms | 95% of runs ≤ 100 ms warm |
+| face | 5 ms | BlazeFace short-range |
+| fire | 82 ms | YOLOv8 pass + label filter |
+
+Single solo-pool worker completes **~45 jobs/min (≈0.75 jobs/s)** end-to-end — each job includes a network image download. Submission (48 RPS) intentionally outpaces one worker; capacity scales by adding worker replicas (`--concurrency=N` / more containers on Linux). Reproduce with `bash scripts/run_benchmarks.sh`.
 
 ## Local Development
 
 ```bash
-docker compose -f infra/docker-compose.yml up -d
+docker compose -f infra/docker-compose.yml up -d     # postgres + redis
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
@@ -39,59 +98,76 @@ uvicorn api.main:app --reload --port 8000
 celery -A workers.celery_app worker --loglevel=info --pool=solo
 ```
 
-> **macOS note:** the worker runs with `--pool=solo` — tasks execute in the main
-> process with no forking. On macOS, Celery's default prefork pool crashes with
-> SIGSEGV when MediaPipe initializes its native C++ threading inside a forked
-> child. Solo pool avoids this by not forking, at the cost of single-task
-> concurrency. On **Linux**, the default prefork pool works fine; use
-> `--concurrency=N` there for real parallelism.
+> **macOS note:** the worker uses `--pool=solo` because Celery's default prefork
+> pool SIGSEGVs when MediaPipe initializes its native C++ threading in a forked
+> child. On **Linux** prefork works fine — use `--concurrency=N` for real
+> parallelism. To force prefork on macOS for testing:
+> `OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES celery -A workers.celery_app worker --concurrency=2`
+> (a workaround, not a fix).
 
-### Running the Frontend
-
-The React dashboard lives in `frontend/` and reaches the API through Vite's dev
-proxy, so start the API on :8000 first, then:
+**Frontend** (Vite proxies `/api` and `/ws` to :8000):
 
 ```bash
-cd frontend
-npm install
-npm run dev
+cd frontend && npm install && npm run dev   # → http://localhost:5173
 ```
 
-Then open http://localhost:5173.
+**Metrics:** `curl http://localhost:8000/metrics`. Key series:
+`cv_jobs_submitted_total`, `cv_jobs_completed_total`,
+`cv_inference_duration_seconds` (histogram), `cv_websocket_connections`.
+To aggregate worker metrics behind the API's `/metrics`, point both processes at
+the same `PROMETHEUS_MULTIPROC_DIR`.
 
-### Troubleshooting
+**Demo GIF:** `bash scripts/generate_demo.sh` prints the recording flow and the
+ffmpeg/gifski recipe (output: `docs/demo.gif`).
 
-**Running prefork on macOS (e.g. to test concurrency):** disable Apple's
-Objective-C fork-safety guard before launching the worker:
+## API Reference
 
-```bash
-OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES \
-  celery -A workers.celery_app worker --loglevel=info --concurrency=2
-```
+| Endpoint | Description |
+|---|---|
+| `POST /api/v1/jobs` | Submit a job (JSON: `input_url`, `model_type`, `options`) → `202` + `job_id` |
+| `POST /api/v1/jobs/upload` | Submit via multipart file upload (≤10 MB image) |
+| `GET /api/v1/jobs/{id}` | Job status + nested result (detections, timings) |
+| `GET /api/v1/jobs?status=&limit=&offset=` | Paginated job list, newest first |
+| `GET /api/v1/jobs/{id}/image` | Serve an uploaded input image |
+| `WS /ws/jobs/{id}` | Live `status_change` events for one job |
+| `GET /health` · `GET /ready` | Liveness · readiness (checks Postgres) |
+| `GET /metrics` | Prometheus exposition |
 
-This is a workaround, not a fix — it silences the check that would otherwise
-abort the forked child. Prefer `--pool=solo` for everyday macOS development, and
-use Linux (or the Docker worker image) for genuine prefork concurrency.
+Interactive docs at `http://localhost:8000/docs`.
 
-## Viewing Metrics
+## Progress Tracker
 
-Prometheus metrics are exposed at `GET /metrics`:
+- [x] Day 1: Project scaffolding, Docker Compose, health endpoints
+- [x] Day 2: Async SQLAlchemy 2.0 data layer, Alembic migrations, readiness probes
+- [x] Day 3: Jobs REST API (submit, get, list) with Pydantic v2 validation
+- [x] Day 4: Celery worker wired for end-to-end job processing
+- [x] Day 5: Real YOLOv8 inference — per-process model registry, image download/cleanup
+- [x] Day 6: Three models behind the shared InferenceModel interface
+- [x] Day 7: Multi-model routing via the model registry
+- [x] Day 8-9: WebSocket real-time status via Redis pub/sub
+- [x] Day 10-11: Prometheus multiprocess metrics + structured JSON logging
+- [x] Day 12-13: React dashboard with real-time updates and canvas bounding boxes
+- [x] Day 14: Locust load test, benchmarks, architecture diagram, README polish
 
-```bash
-curl http://localhost:8000/metrics
-```
+## Design Decisions
 
-Key series: `cv_jobs_submitted_total{model_type}`, `cv_jobs_completed_total{model_type,status}`, `cv_inference_duration_seconds{model_type}` (histogram), and `cv_websocket_connections`.
+| Choice | Why | Trade-off |
+|---|---|---|
+| Redis as Celery broker (not RabbitMQ/Kafka) | Lowest operational complexity; throughput far exceeds this workload; doubles as the pub/sub bus | No durable queues or dead-letter exchanges; migrate to RabbitMQ if delivery guarantees tighten |
+| Sync SQLAlchemy in workers | Celery prefork is synchronous; asyncpg connections aren't fork-safe; plain `Session` code is simpler | Two engines (async API, sync worker) to keep consistent |
+| Per-process model registry (lazy) | Models load once per worker process, only for types actually used; fork-safe by construction | First task per process pays the cold start; no cross-process sharing |
+| Offset pagination | Simple, stateless, fits a dashboard scanning recent jobs | Deep pages scan more rows; cursor pagination is the upgrade path |
+| Detections as JSONB (not a detections table) | Reads dominate; queries are always "all detections for a job" — no joins | Can't index/query individual detections efficiently |
+| Fire-and-forget status publish | A Redis blip must never fail an inference job; UI state is reconstructable from the DB | A dropped event means a client may briefly show stale status (poll reconciles) |
+| `--pool=solo` on macOS dev | Prefork + MediaPipe native threads SIGSEGV on macOS | Single-task concurrency locally; Linux/Docker uses prefork |
 
-The API and Celery workers are separate processes, so metrics use prometheus-client's multiprocess mode. To aggregate **both** behind the one `/metrics` endpoint, point them at the same `PROMETHEUS_MULTIPROC_DIR` (a shared path — a shared volume under Docker):
+## What's Not Included
 
-```bash
-export PROMETHEUS_MULTIPROC_DIR=./prometheus_multiproc
-# start the API and the worker with this env var set
-```
+Honest limitations of the current iteration:
 
-Without it, `/metrics` reports only the API process's own metrics.
-
-## Tech Stack
-
-Python 3.13 · FastAPI 0.115 · SQLAlchemy 2.0 async · Alembic · Pydantic v2 · Celery 5.4 · Redis 7.4 · PostgreSQL 16 · ultralytics/YOLOv8 · MediaPipe · Prometheus · structlog · Docker Compose
+- **No authentication or rate limiting** — every endpoint is open; fine for a demo, a blocker for production.
+- **No multi-tenant isolation** — all jobs share one namespace and one queue.
+- **Single-node deployment** — one Docker Compose host; no k8s manifests, no HA Postgres/Redis.
+- **Python-side model registry** — model routing lives in worker code, not infrastructure (no per-model autoscaling as you'd get from k8s/KServe).
+- **Fire detection is a flagged placeholder** — base YOLOv8 weights + label filter (`model_version: yolov8n-fire-placeholder-v1`); a real fire model swaps in with zero code changes.
+- **No retention/GC** — uploaded images and old job rows accumulate until cleaned manually.

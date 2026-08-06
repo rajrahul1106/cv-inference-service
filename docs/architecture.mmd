@@ -1,0 +1,33 @@
+%% CV Inference Service — system architecture
+%% All services run under Docker Compose (infra/docker-compose.yml).
+flowchart LR
+    subgraph client["Client"]
+        browser["React Dashboard<br/>(Vite, :5173)"]
+    end
+
+    subgraph api_layer["API layer"]
+        api["FastAPI Gateway<br/>REST + WebSocket + /metrics (:8000)"]
+    end
+
+    subgraph message_layer["Message layer"]
+        redis[("Redis 7.4<br/>Celery broker + pub/sub")]
+    end
+
+    subgraph worker_layer["Worker layer"]
+        worker["Celery Worker(s)<br/>YOLOv8 · MediaPipe face · fire<br/>(per-process model registry)"]
+    end
+
+    subgraph data_layer["Data layer"]
+        postgres[("PostgreSQL 16<br/>jobs + results (JSONB)")]
+    end
+
+    browser -- "HTTP: submit / list / get jobs" --> api
+    api -- "persist job, read results" --> postgres
+    api -- "enqueue inference.run" --> redis
+    redis -- "dequeue task" --> worker
+    worker -- "write result, update status" --> postgres
+    worker -- "publish status events<br/>(job.status.*)" --> redis
+    redis -. "pub/sub subscribe" .-> api
+    api -. "WebSocket push<br/>/ws/jobs/{id}" .-> browser
+
+    note["All services run in Docker Compose"]
