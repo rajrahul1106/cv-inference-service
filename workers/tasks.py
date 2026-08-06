@@ -29,7 +29,7 @@ from api.db.models import Job, JobStatus, Result
 from api.metrics.prometheus import INFERENCE_DURATION, JOBS_COMPLETED
 from workers.celery_app import app
 from workers.model_registry import get_model
-from workers.storage import cleanup_image, download_image, ensure_dirs
+from workers.storage import cleanup_image, ensure_dirs, load_input_image
 
 logger = structlog.get_logger(__name__)
 
@@ -149,6 +149,7 @@ def run_inference(
     job_uuid = UUID(job_id)
     engine = get_sync_engine()
     image_path: Optional[str] = None
+    image_is_temp = False
     stage = "processing"
 
     try:
@@ -174,10 +175,11 @@ def run_inference(
             },
         )
 
-        # Download the input image (transient working file).
+        # Resolve the input to a local image: a URL is downloaded (temp), an
+        # already-uploaded local path is used in place (kept).
         ensure_dirs()
         stage = "download"
-        image_path = download_image(input_url, settings.upload_dir)
+        image_path, image_is_temp = load_input_image(input_url, settings.upload_dir)
 
         # Run inference with the per-process-cached model.
         stage = "inference"
@@ -261,5 +263,6 @@ def run_inference(
             logger.exception("job_failed_mark_error", job_id=job_id)
         raise
     finally:
-        if image_path is not None:
+        # Only delete files we downloaded; uploaded files persist for re-display.
+        if image_path is not None and image_is_temp:
             cleanup_image(image_path)

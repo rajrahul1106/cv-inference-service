@@ -47,6 +47,24 @@ export async function submitJob(input_url, model_type, options = {}) {
 }
 
 /**
+ * Submit an inference job with an uploaded image file (multipart).
+ * @param {File} file
+ * @param {string} model_type - "yolo" | "face" | "fire"
+ * @param {object} [options] - may include confidence_threshold
+ * @returns {Promise<{job_id: string, status: string, websocket_url: string, estimated_wait_seconds: number}>}
+ */
+export async function submitJobFile(file, model_type, options = {}) {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("model_type", model_type);
+  if (options.confidence_threshold != null) {
+    form.append("confidence_threshold", String(options.confidence_threshold));
+  }
+  const res = await fetch(`${BASE}/upload`, { method: "POST", body: form });
+  return handle(res);
+}
+
+/**
  * Fetch a single job, including its result once completed.
  * @param {string} job_id
  * @returns {Promise<object>}

@@ -104,6 +104,21 @@ def download_image(url: str, dest_dir: str, max_size_mb: int = 10) -> str:
     return dest_path
 
 
+def load_input_image(input_ref: str, dest_dir: str) -> tuple[str, bool]:
+    """Resolve a job's input to a local image path.
+
+    Returns ``(path, is_temp)``. For an http(s) URL the image is downloaded to
+    ``dest_dir`` and ``is_temp`` is True (delete it after inference). For a local
+    path — an already-uploaded file on disk — it is used in place and ``is_temp``
+    is False (kept, so it can be re-displayed).
+    """
+    if input_ref.startswith(("http://", "https://")):
+        return download_image(input_ref, dest_dir), True
+    if not os.path.exists(input_ref):
+        raise ValueError(f"input file not found: {input_ref}")
+    return input_ref, False
+
+
 def cleanup_image(path: str) -> None:
     """Best-effort delete of a temporary image. Logs but never raises."""
     try:

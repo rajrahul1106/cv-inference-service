@@ -6,6 +6,7 @@
 # Web framework
 fastapi==0.115.0
 uvicorn[standard]==0.32.0
+python-multipart==0.0.12  # multipart/form-data parsing for file uploads
 
 # Configuration (reads .env file)
 pydantic==2.9.2

@@ -186,6 +186,10 @@ export default function JobDetail({ job, onJobUpdated }) {
 
   const result = detail.result;
   const detections = result?.detections || [];
+  // URL jobs load input_url directly; uploaded jobs are served by the API.
+  const imageSrc = detail.input_url.startsWith("http")
+    ? detail.input_url
+    : `/api/v1/jobs/${detail.job_id}/image`;
 
   return (
     <div className="space-y-4 rounded-lg bg-white p-4 shadow">
@@ -221,7 +225,7 @@ export default function JobDetail({ job, onJobUpdated }) {
         </p>
       )}
 
-      <ImageWithBoxes url={detail.input_url} detections={detections} />
+      <ImageWithBoxes url={imageSrc} detections={detections} />
 
       <DetectionsTable detections={detections} />
     </div>

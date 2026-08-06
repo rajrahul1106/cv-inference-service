@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 
-import { listJobs, submitJob } from "../api/client.js";
+import { listJobs, submitJob, submitJobFile } from "../api/client.js";
 import JobDetail from "../components/JobDetail.jsx";
 import JobList from "../components/JobList.jsx";
 import UploadCard from "../components/UploadCard.jsx";
@@ -41,11 +41,22 @@ export default function Dashboard() {
     [refresh]
   );
 
+  // Same flow as handleSubmit, but for a multipart file upload.
+  const handleSubmitFile = useCallback(
+    async (file, model_type, options) => {
+      const submitted = await submitJobFile(file, model_type, options);
+      await refresh();
+      setSelectedJobId(submitted.job_id);
+      return submitted;
+    },
+    [refresh]
+  );
+
   const selectedJob = jobs.find((j) => j.job_id === selectedJobId) || null;
 
   return (
     <div className="space-y-6">
-      <UploadCard onSubmit={handleSubmit} />
+      <UploadCard onSubmit={handleSubmit} onSubmitFile={handleSubmitFile} />
 
       {listError && (
         <div className="rounded-md border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">
