@@ -179,9 +179,9 @@ export default function UploadCard({ onSubmit, onSubmitFile }) {
             onChange={(e) => {
               const next = e.target.value;
               setModelType(next);
-              // MediaPipe face scores run low (~0.1-0.2); default the slider to
-              // 0.1 for face (still unchecked by default, like YOLO).
-              setThreshold(next === "face" ? 0.1 : 0.25);
+              // Face defaults to 0.35 to filter BlazeFace's low-score false
+              // positives (still unchecked by default, like YOLO).
+              setThreshold(next === "face" ? 0.35 : 0.25);
               // Swap in the model's demo image, but never clobber a URL the
               // user typed themselves.
               setInputUrl((current) =>

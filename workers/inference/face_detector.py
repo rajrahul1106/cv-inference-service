@@ -37,15 +37,22 @@ _MODEL_URL = (
     "blaze_face_short_range/float16/1/blaze_face_short_range.tflite"
 )
 _MODEL_FILENAME = "blaze_face_short_range.tflite"
+# Default post-filter applied to BlazeFace scores. The model floor is kept low
+# (see __init__) so marginal faces are still *proposed*; this threshold is what
+# actually drops them, which means a caller can lower it per-request to surface
+# them. 0.35 clears BlazeFace's tail of false positives (~0.1-0.3) while keeping
+# genuine close-up detections (a real portrait face scores ~0.55+).
+_DEFAULT_CONFIDENCE = 0.35
 
 
 class FaceDetector(InferenceModel):
     """MediaPipe (Tasks API) BlazeFace short-range face detector."""
 
+    # The floor stays low on purpose: it decides what the model will even
+    # propose, and it is fixed for the process (models load once per worker).
+    # Filtering is done by _DEFAULT_CONFIDENCE in predict() instead, so the
+    # effective threshold is tunable per request.
     def __init__(self, min_detection_confidence: float = 0.1) -> None:
-        # MediaPipe face scores run low: bus.jpg's three faces score 0.12-0.21,
-        # so anything near YOLO's 0.25-0.5 range drops them entirely. 0.1 keeps
-        # real faces while avoiding the false positives that appear below ~0.1.
         self._min_confidence = min_detection_confidence
         self._model: Optional[mp_vision.FaceDetector] = None
 
@@ -79,8 +86,9 @@ class FaceDetector(InferenceModel):
             raise ValueError(f"could not read image {image_path}")
 
         # Post-filter on top of the model's own min_detection_confidence (set at
-        # load). Default 0.0 = no extra filtering unless the caller asks for it.
-        threshold = float(options.get("confidence_threshold", 0.0))
+        # load). This is the effective threshold: lowering it (via the dashboard
+        # slider / the confidence_threshold option) surfaces marginal faces.
+        threshold = float(options.get("confidence_threshold", _DEFAULT_CONFIDENCE))
 
         # create_from_file decodes the image; the Tasks API returns absolute
         # pixel bounding boxes, so no relative->absolute conversion is needed.
