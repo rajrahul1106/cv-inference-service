@@ -5,7 +5,15 @@ const MODEL_TYPES = [
   { value: "face", label: "😀 Face detection" },
   { value: "fire", label: "🔥 Fire (placeholder)" },
 ];
-const DEMO_URL = "https://ultralytics.com/images/bus.jpg";
+// Per-model demo images. Face uses a close-up portrait: MediaPipe BlazeFace is
+// tuned for near faces, and distant ones (as in bus.jpg) yield false positives.
+const DEMO_URLS = {
+  yolo: "https://ultralytics.com/images/bus.jpg",
+  face: "https://ultralytics.com/images/zidane.jpg",
+  fire: "https://ultralytics.com/images/bus.jpg",
+};
+const DEMO_URL = DEMO_URLS.yolo;
+const DEMO_URL_VALUES = Object.values(DEMO_URLS);
 const ALLOWED_TYPES = ["image/jpeg", "image/png", "image/webp", "image/bmp"];
 const MAX_BYTES = 10 * 1024 * 1024;
 
@@ -174,6 +182,11 @@ export default function UploadCard({ onSubmit, onSubmitFile }) {
               // MediaPipe face scores run low (~0.1-0.2); default the slider to
               // 0.1 for face (still unchecked by default, like YOLO).
               setThreshold(next === "face" ? 0.1 : 0.25);
+              // Swap in the model's demo image, but never clobber a URL the
+              // user typed themselves.
+              setInputUrl((current) =>
+                DEMO_URL_VALUES.includes(current) ? DEMO_URLS[next] : current
+              );
             }}
             className="w-full rounded-md border border-slate-300 px-3 py-2 focus:border-slate-500 focus:outline-none"
           >

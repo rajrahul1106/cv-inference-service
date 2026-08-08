@@ -170,4 +170,5 @@ Honest limitations of the current iteration:
 - **Single-node deployment** — one Docker Compose host; no k8s manifests, no HA Postgres/Redis.
 - **Python-side model registry** — model routing lives in worker code, not infrastructure (no per-model autoscaling as you'd get from k8s/KServe).
 - **Fire detection is a flagged placeholder** — base YOLOv8 weights + label filter (`model_version: yolov8n-fire-placeholder-v1`); a real fire model swaps in with zero code changes.
+- **Face detection is distance-limited** — MediaPipe BlazeFace is optimized for close-up faces (up to ~2m). Distant faces below 150px produce false positives. For crowd/distant face detection, swap in RetinaFace or YOLOv8-face.
 - **No retention/GC** — uploaded images and old job rows accumulate until cleaned manually.
