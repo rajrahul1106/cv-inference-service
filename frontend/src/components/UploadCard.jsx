@@ -179,9 +179,8 @@ export default function UploadCard({ onSubmit, onSubmitFile }) {
             onChange={(e) => {
               const next = e.target.value;
               setModelType(next);
-              // Face defaults to 0.35 to filter BlazeFace's low-score false
-              // positives (still unchecked by default, like YOLO).
-              setThreshold(next === "face" ? 0.35 : 0.25);
+              // All three models are YOLO-based, so they share the 0.25 default.
+              setThreshold(0.25);
               // Swap in the model's demo image, but never clobber a URL the
               // user typed themselves.
               setInputUrl((current) =>

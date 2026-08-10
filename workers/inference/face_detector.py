@@ -1,79 +1,58 @@
 """
-MediaPipe face detector (Tasks API).
+YOLOv8 face detector.
 
-DEVIATION FROM SPEC: the Day 6 task targeted the legacy
-``mp.solutions.face_detection`` API, but mediapipe's Python-3.13 wheels
-(0.10.30+) removed the entire ``mp.solutions`` package. This implementation uses
-the current Tasks API (``mediapipe.tasks.python.vision.FaceDetector``) with the
-BlazeFace short-range model. The InferenceModel contract and output format are
-unchanged — only the mediapipe calls differ. Other consequences of the switch:
-  - short-range model (the Tasks API's standard face bundle) rather than the
-    legacy ``model_selection=1`` full-range model;
-  - the Tasks API returns ABSOLUTE-pixel boxes, so there is no relative->absolute
-    conversion to do;
-  - a one-time ~230 KB ``.tflite`` model bundle is downloaded to
-    settings.models_cache_dir (same auto-download pattern as ultralytics weights).
+Uses a YOLOv8-nano model fine-tuned for face detection (the
+``arnabdhar/YOLOv8-Face-Detection`` weights on Hugging Face), wrapped behind the
+InferenceModel interface. This follows the same pattern as
+workers/inference/yolo_detector.py — ultralytics does the forward pass and
+returns absolute-pixel xyxy boxes.
+
+Replaces the previous MediaPipe BlazeFace implementation, which was optimized
+for close-up faces: it missed angled/multiple faces, emitted a tail of low-score
+false positives, and reported square boxes in its own padded coordinate space
+rather than true image pixels.
 """
 
 import logging
-import os
 import time
-import urllib.request
 from typing import Optional
 
-import mediapipe as mp
-from mediapipe.tasks import python as mp_python
-from mediapipe.tasks.python import vision as mp_vision
+from huggingface_hub import hf_hub_download
+from ultralytics import YOLO
 
 from api.config import settings
 from workers.inference.base import InferenceModel, InferenceResult
 
 logger = logging.getLogger(__name__)
 
-_MODEL_VERSION = "mediapipe-face-v0.10.35"
-# Google-hosted BlazeFace short-range detector bundle (pinned version 1).
-_MODEL_URL = (
-    "https://storage.googleapis.com/mediapipe-models/face_detector/"
-    "blaze_face_short_range/float16/1/blaze_face_short_range.tflite"
-)
-_MODEL_FILENAME = "blaze_face_short_range.tflite"
-# Default post-filter applied to BlazeFace scores. The model floor is kept low
-# (see __init__) so marginal faces are still *proposed*; this threshold is what
-# actually drops them, which means a caller can lower it per-request to surface
-# them. 0.35 clears BlazeFace's tail of false positives (~0.1-0.3) while keeping
-# genuine close-up detections (a real portrait face scores ~0.55+).
-_DEFAULT_CONFIDENCE = 0.35
+# Match YOLO's default confidence threshold.
+_DEFAULT_CONFIDENCE = 0.25
+_MODEL_VERSION = "yolov8n-face-v1.0"
+# Pretrained face weights (single class: FACE), ~6 MB.
+_HF_REPO_ID = "arnabdhar/YOLOv8-Face-Detection"
+_HF_FILENAME = "model.pt"
 
 
 class FaceDetector(InferenceModel):
-    """MediaPipe (Tasks API) BlazeFace short-range face detector."""
+    """YOLOv8-nano face detector."""
 
-    # The floor stays low on purpose: it decides what the model will even
-    # propose, and it is fixed for the process (models load once per worker).
-    # Filtering is done by _DEFAULT_CONFIDENCE in predict() instead, so the
-    # effective threshold is tunable per request.
-    def __init__(self, min_detection_confidence: float = 0.1) -> None:
+    def __init__(self, min_detection_confidence: float = _DEFAULT_CONFIDENCE) -> None:
         self._min_confidence = min_detection_confidence
-        self._model: Optional[mp_vision.FaceDetector] = None
+        self._model: Optional[YOLO] = None
 
-    def _ensure_model_file(self) -> str:
-        """Return the local ``.tflite`` path, downloading it once if missing."""
-        os.makedirs(settings.models_cache_dir, exist_ok=True)
-        path = os.path.join(settings.models_cache_dir, _MODEL_FILENAME)
-        if not os.path.exists(path):
-            logger.info("downloading MediaPipe face model to %s", path)
-            urllib.request.urlretrieve(_MODEL_URL, path)
-        return path
+    def _ensure_weights(self) -> str:
+        """Return the local weights path, downloading them once if missing."""
+        return hf_hub_download(
+            repo_id=_HF_REPO_ID,
+            filename=_HF_FILENAME,
+            cache_dir=settings.models_cache_dir,
+        )
 
     def load(self) -> None:
-        """Create the Tasks-API detector, fetching the model bundle if needed."""
-        model_path = self._ensure_model_file()
-        options = mp_vision.FaceDetectorOptions(
-            base_options=mp_python.BaseOptions(model_asset_path=model_path),
-            min_detection_confidence=self._min_confidence,
-        )
-        self._model = mp_vision.FaceDetector.create_from_options(options)
-        logger.info("MediaPipe face detector loaded (%s)", _MODEL_VERSION)
+        """Fetch the face weights (first use per machine) and load the model."""
+        logger.info("loading YOLO face weights from %s", _HF_REPO_ID)
+        self._model = YOLO(self._ensure_weights())
+        logger.info("YOLO face weights loaded (%s)", _MODEL_VERSION)
 
     def is_loaded(self) -> bool:
         return self._model is not None
@@ -82,25 +61,19 @@ class FaceDetector(InferenceModel):
         """Detect faces in the image and return normalized detections."""
         if self._model is None:
             raise RuntimeError("FaceDetector.predict called before load()")
-        if not os.path.exists(image_path):
-            raise ValueError(f"could not read image {image_path}")
 
-        # Post-filter on top of the model's own min_detection_confidence (set at
-        # load). This is the effective threshold: lowering it (via the dashboard
-        # slider / the confidence_threshold option) surfaces marginal faces.
-        threshold = float(options.get("confidence_threshold", _DEFAULT_CONFIDENCE))
-
-        # create_from_file decodes the image; the Tasks API returns absolute
-        # pixel bounding boxes, so no relative->absolute conversion is needed.
-        mp_image = mp.Image.create_from_file(image_path)
+        confidence = float(
+            options.get("confidence_threshold", self._min_confidence)
+        )
 
         start = time.perf_counter()
-        result = self._model.detect(mp_image)
+        # verbose=False keeps ultralytics from printing to stdout (we log ourselves).
+        results = self._model.predict(source=image_path, conf=confidence, verbose=False)
         inference_ms = int((time.perf_counter() - start) * 1000)
 
-        detections = self._extract_detections(result, threshold)
+        detections = self._extract_detections(results)
         logger.info(
-            "MediaPipe face inference on %s: %d detection(s) in %d ms",
+            "YOLO face inference on %s: %d detection(s) in %d ms",
             image_path,
             len(detections),
             inference_ms,
@@ -112,23 +85,19 @@ class FaceDetector(InferenceModel):
         )
 
     @staticmethod
-    def _extract_detections(result: object, threshold: float) -> list[dict]:
-        """Convert Tasks-API detections into our normalized detection dicts."""
+    def _extract_detections(results: list) -> list[dict]:
+        """Flatten ultralytics Results into ``{label, confidence, bbox}`` dicts."""
         detections: list[dict] = []
-        for detection in getattr(result, "detections", None) or []:
-            score = float(detection.categories[0].score)
-            if score < threshold:
-                continue
-            box = detection.bounding_box  # absolute pixels
-            x1 = max(0, round(box.origin_x))
-            y1 = max(0, round(box.origin_y))
-            x2 = round(box.origin_x + box.width)
-            y2 = round(box.origin_y + box.height)
-            detections.append(
-                {
-                    "label": "face",
-                    "confidence": round(score, 4),
-                    "bbox": [x1, y1, x2, y2],
-                }
-            )
+        for result in results:
+            for box in result.boxes:
+                x1, y1, x2, y2 = box.xyxy[0].tolist()
+                detections.append(
+                    {
+                        # The model's single class is "FACE"; normalize casing.
+                        "label": "face",
+                        "confidence": round(float(box.conf[0]), 4),
+                        # Pixel coordinates, rounded to ints (SPEC §6 example).
+                        "bbox": [round(x1), round(y1), round(x2), round(y2)],
+                    }
+                )
         return detections

@@ -22,7 +22,7 @@ flowchart LR
     end
 
     subgraph worker_layer["Worker layer"]
-        worker["Celery Worker(s)<br/>YOLOv8 · MediaPipe face · fire<br/>(per-process model registry)"]
+        worker["Celery Worker(s)<br/>YOLOv8 objects · face · fire<br/>(per-process model registry)"]
     end
 
     subgraph data_layer["Data layer"]
@@ -48,7 +48,7 @@ Diagram source: [docs/architecture.mmd](docs/architecture.mmd).
 | API | FastAPI 0.115 (async), Pydantic v2 |
 | Data | PostgreSQL 16, SQLAlchemy 2.0 async, Alembic migrations |
 | Queue | Celery 5.4 on Redis 7.4 (broker + pub/sub) |
-| ML | ultralytics YOLOv8-nano, MediaPipe Tasks face detection, torch |
+| ML | ultralytics YOLOv8-nano (objects + face), torch |
 | Real-time | FastAPI WebSockets + Redis pub/sub bridge |
 | Observability | prometheus-client (multiprocess mode), structlog JSON logs |
 | Frontend | React 18, Vite, Tailwind |
@@ -57,7 +57,7 @@ Diagram source: [docs/architecture.mmd](docs/architecture.mmd).
 ## Key Features
 
 - **Async job lifecycle** — `POST` returns `202` immediately; jobs flow queued → processing → completed/failed on worker pools, with retryable failures backed off exponentially with jitter.
-- **Three models, one interface** — YOLOv8 objects, MediaPipe faces, and a (placeholder) fire detector all implement `InferenceModel`; adding a model is one registry entry, task code untouched.
+- **Three models, one interface** — YOLOv8 objects, YOLOv8-face, and a (placeholder) fire detector all implement `InferenceModel`; adding a model is one registry entry, task code untouched.
 - **Per-process model caching** — models load once per worker process (lazy, fork-safe), not per task: no repeated 1-3 s cold starts.
 - **Real-time updates without polling** — workers publish status to Redis pub/sub; a lifespan-managed subscriber in the API fans events out to WebSocket clients. Workers never know about sockets.
 - **Two input modes** — public image URL or direct multipart upload (validated, size-capped, served back for display).
@@ -81,7 +81,7 @@ Measured with the standardized [Locust](scripts/load_test.py) run ([scripts/run_
 | Model | Mean inference | Notes |
 |---|---|---|
 | yolo | 81 ms | 95% of runs ≤ 100 ms warm |
-| face | 5 ms | BlazeFace short-range |
+| face | 39 ms | YOLOv8n-face (pretrained) |
 | fire | 82 ms | YOLOv8 pass + label filter |
 
 Single solo-pool worker completes **~45 jobs/min (≈0.75 jobs/s)** end-to-end — each job includes a network image download. Submission (48 RPS) intentionally outpaces one worker; capacity scales by adding worker replicas (`--concurrency=N` / more containers on Linux). Reproduce with `bash scripts/run_benchmarks.sh`.
@@ -95,15 +95,16 @@ pip install -r requirements.txt
 cp .env.example .env
 alembic upgrade head
 uvicorn api.main:app --reload --port 8000
-celery -A workers.celery_app worker --loglevel=info --pool=solo
+celery -A workers.celery_app worker --loglevel=info --concurrency=2
 ```
 
-> **macOS note:** the worker uses `--pool=solo` because Celery's default prefork
-> pool SIGSEGVs when MediaPipe initializes its native C++ threading in a forked
-> child. On **Linux** prefork works fine — use `--concurrency=N` for real
-> parallelism. To force prefork on macOS for testing:
-> `OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES celery -A workers.celery_app worker --concurrency=2`
-> (a workaround, not a fix).
+> **Note:** the worker previously required `--pool=solo` on macOS, because
+> Celery's default prefork pool SIGSEGV'd when MediaPipe initialized its native
+> C++ threading in a forked child. Swapping face detection to YOLOv8 removed
+> MediaPipe, and prefork now runs cleanly on macOS — use `--concurrency=N` for
+> real parallelism on any platform. If you ever reintroduce a fork-unsafe native
+> library, `--pool=solo` (or
+> `OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES`) are the escape hatches.
 
 **Frontend** (Vite proxies `/api` and `/ws` to :8000):
 
@@ -146,7 +147,7 @@ Interactive docs at `http://localhost:8000/docs`.
 - [x] Day 7: Multi-model routing via the model registry
 - [x] Day 8-9: WebSocket real-time status via Redis pub/sub
 - [x] Day 10-11: Prometheus multiprocess metrics + structured JSON logging
-- [x] Day 12-13: React dashboard with real-time updates and canvas bounding boxes
+- [x] Day 12-13: React dashboard with real-time updates and SVG bounding-box overlays
 - [x] Day 14: Locust load test, benchmarks, architecture diagram, README polish
 
 ## Design Decisions
@@ -159,7 +160,7 @@ Interactive docs at `http://localhost:8000/docs`.
 | Offset pagination | Simple, stateless, fits a dashboard scanning recent jobs | Deep pages scan more rows; cursor pagination is the upgrade path |
 | Detections as JSONB (not a detections table) | Reads dominate; queries are always "all detections for a job" — no joins | Can't index/query individual detections efficiently |
 | Fire-and-forget status publish | A Redis blip must never fail an inference job; UI state is reconstructable from the DB | A dropped event means a client may briefly show stale status (poll reconciles) |
-| `--pool=solo` on macOS dev | Prefork + MediaPipe native threads SIGSEGV on macOS | Single-task concurrency locally; Linux/Docker uses prefork |
+| YOLOv8-face over MediaPipe BlazeFace | Handles angled/multiple faces, returns true pixel boxes, and reuses the existing ultralytics path | ~39 ms vs BlazeFace's ~5 ms per image |
 
 ## What's Not Included
 
@@ -170,5 +171,4 @@ Honest limitations of the current iteration:
 - **Single-node deployment** — one Docker Compose host; no k8s manifests, no HA Postgres/Redis.
 - **Python-side model registry** — model routing lives in worker code, not infrastructure (no per-model autoscaling as you'd get from k8s/KServe).
 - **Fire detection is a flagged placeholder** — base YOLOv8 weights + label filter (`model_version: yolov8n-fire-placeholder-v1`); a real fire model swaps in with zero code changes.
-- **Face detection is distance-limited** — MediaPipe BlazeFace is optimized for close-up faces (up to ~2m). Distant faces below 150px produce false positives. It therefore defaults to a 0.35 confidence threshold to filter that noise; lower it via the dashboard slider to see marginal detections. For crowd/distant face detection, swap in RetinaFace or YOLOv8-face.
 - **No retention/GC** — uploaded images and old job rows accumulate until cleaned manually.
