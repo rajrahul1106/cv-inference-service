@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
 import { getJob } from "../api/client.js";
 import { useJobSocket } from "../hooks/useJobSocket.js";
@@ -33,60 +33,32 @@ function fmtTime(iso) {
 }
 
 /**
- * Image with a canvas overlay drawing scaled bounding boxes on top.
+ * Image with an SVG overlay drawing bounding boxes on top.
+ *
+ * The SVG's viewBox is the image's NATURAL pixel dimensions, which is the same
+ * space the model reports bboxes in — so boxes are plotted with raw model
+ * coordinates and the browser scales them to the rendered size for us. No
+ * manual scale factors, no redraw on resize, and nothing to go stale if the
+ * image lays out after the first paint (the bug in the old canvas version,
+ * which sized itself from img.clientWidth at draw time).
+ *
  * @param {{url: string, detections: object[]}} props
  */
 function ImageWithBoxes({ url, detections }) {
-  const imgRef = useRef(null);
-  const canvasRef = useRef(null);
   const [imgError, setImgError] = useState(false);
+  const [natural, setNatural] = useState(null);
 
   useEffect(() => {
     setImgError(false);
+    setNatural(null);
   }, [url]);
 
-  useEffect(() => {
-    const draw = () => {
-      const img = imgRef.current;
-      const canvas = canvasRef.current;
-      if (!img || !canvas || !img.complete || !img.naturalWidth) return;
-      const rw = img.clientWidth;
-      const rh = img.clientHeight;
-      canvas.width = rw;
-      canvas.height = rh;
-      // bbox coords are in the original image's pixel space; scale to display.
-      const sx = rw / img.naturalWidth;
-      const sy = rh / img.naturalHeight;
-      const ctx = canvas.getContext("2d");
-      ctx.clearRect(0, 0, rw, rh);
-      ctx.lineWidth = 2;
-      ctx.font = "14px sans-serif";
-      ctx.textBaseline = "bottom";
-      detections.forEach((d, i) => {
-        const color = BOX_COLORS[i % BOX_COLORS.length];
-        const [x1, y1, x2, y2] = d.bbox;
-        const bx = x1 * sx;
-        const by = y1 * sy;
-        const bw = (x2 - x1) * sx;
-        const bh = (y2 - y1) * sy;
-        ctx.strokeStyle = color;
-        ctx.strokeRect(bx, by, bw, bh);
-        const label = `${d.label} ${(d.confidence * 100).toFixed(0)}%`;
-        const tw = ctx.measureText(label).width;
-        const ty = Math.max(16, by);
-        ctx.fillStyle = color;
-        ctx.fillRect(bx, ty - 16, tw + 8, 16);
-        ctx.fillStyle = "#fff";
-        ctx.fillText(label, bx + 4, ty - 2);
-      });
-    };
-
-    draw();
-    const img = imgRef.current;
-    if (img) img.onload = draw;
-    window.addEventListener("resize", draw);
-    return () => window.removeEventListener("resize", draw);
-  }, [detections, url]);
+  const handleLoad = (e) => {
+    setNatural({
+      width: e.currentTarget.naturalWidth,
+      height: e.currentTarget.naturalHeight,
+    });
+  };
 
   if (imgError) {
     return (
@@ -96,19 +68,57 @@ function ImageWithBoxes({ url, detections }) {
     );
   }
 
+  // Label text scales with the image so it stays legible at any render size.
+  const fontSize = natural ? Math.max(natural.width, natural.height) * 0.022 : 12;
+
   return (
     <div className="relative inline-block">
       <img
-        ref={imgRef}
         src={url}
         alt="inference input"
+        onLoad={handleLoad}
         onError={() => setImgError(true)}
         className="block max-w-full rounded"
       />
-      <canvas
-        ref={canvasRef}
-        className="pointer-events-none absolute left-0 top-0"
-      />
+      {natural && (
+        <svg
+          viewBox={`0 0 ${natural.width} ${natural.height}`}
+          preserveAspectRatio="none"
+          className="pointer-events-none absolute inset-0 h-full w-full"
+        >
+          {detections.map((d, i) => {
+            const color = BOX_COLORS[i % BOX_COLORS.length];
+            const [x1, y1, x2, y2] = d.bbox;
+            const label = `${d.label} ${(d.confidence * 100).toFixed(0)}%`;
+            return (
+              <g key={i}>
+                <rect
+                  x={x1}
+                  y={y1}
+                  width={Math.max(0, x2 - x1)}
+                  height={Math.max(0, y2 - y1)}
+                  fill="none"
+                  stroke={color}
+                  strokeWidth={2}
+                  vectorEffect="non-scaling-stroke"
+                />
+                <text
+                  x={x1 + fontSize * 0.25}
+                  y={Math.max(fontSize, y1 - fontSize * 0.3)}
+                  fill={color}
+                  fontSize={fontSize}
+                  stroke="#fff"
+                  strokeWidth={fontSize * 0.15}
+                  paintOrder="stroke"
+                  fontFamily="sans-serif"
+                >
+                  {label}
+                </text>
+              </g>
+            );
+          })}
+        </svg>
+      )}
     </div>
   );
 }
