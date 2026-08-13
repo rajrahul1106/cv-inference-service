@@ -41,6 +41,8 @@ redis_data/
 *.h5
 *.weights
 models_cache/
+# ...except our custom-trained fire weights, which are committed (~21 MB).
+!models/*.pt
 
 # Frontend
 frontend/node_modules/

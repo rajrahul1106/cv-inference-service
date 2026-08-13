@@ -1,61 +1,95 @@
 """
-Fire/smoke detector — PLACEHOLDER.
+Fire and smoke detector (custom-trained YOLOv8s).
 
-There is no real fire-trained model wired in yet. This composes the base
-COCO-pretrained YOLOv8 detector (workers/inference/yolo_detector.py) and keeps
-only detections whose label is fire/smoke. COCO contains no such classes, so
-``predict()`` returns an empty list today — but the emptiness emerges from a
-real inference pass, and swapping ``weights_path`` for genuinely fire-trained
-weights (with fire/smoke classes) makes this work with **zero code changes**.
+Wraps ``ultralytics.YOLO`` behind the InferenceModel interface, exactly like
+workers/inference/yolo_detector.py. The weights are trained in-house on a
+12,733-image Roboflow fire/smoke dataset (2 classes: fire, smoke) and live in
+the repo at models/yolov8n_fire.pt, so no download is needed at load time.
 
-The placeholder status is flagged three ways: this docstring, the
-``model_version`` string, and a warning logged at load time. Do not present this
-as a working fire detector until real weights are trained or sourced.
+Class names are read from the loaded model rather than hardcoded, so retrained
+weights with different or additional classes work without code changes.
 """
 
 import logging
+import time
+from pathlib import Path
+from typing import Optional
+
+from ultralytics import YOLO
 
 from workers.inference.base import InferenceModel, InferenceResult
-from workers.inference.yolo_detector import YOLODetector
 
 logger = logging.getLogger(__name__)
 
-# Labels a real fire model would emit; base COCO has none of these.
-_FIRE_LABELS = {"fire", "smoke"}
-_MODEL_VERSION = "yolov8n-fire-placeholder-v1"
+# Match YOLO's default confidence threshold.
+_DEFAULT_CONFIDENCE = 0.25
+# yolov8s architecture, custom-trained (the filename's "n" is historical).
+_MODEL_VERSION = "yolov8s-fire-custom-v1"
+# Resolved from this file so the worker finds the weights regardless of its CWD.
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_DEFAULT_WEIGHTS = str(_PROJECT_ROOT / "models" / "yolov8n_fire.pt")
 
 
 class FireDetector(InferenceModel):
-    """Placeholder fire/smoke detector built on base YOLOv8 + label filtering."""
+    """Custom-trained YOLOv8s fire/smoke detector."""
 
-    def __init__(self, weights_path: str = "yolov8n.pt") -> None:
+    def __init__(self, weights_path: str = _DEFAULT_WEIGHTS) -> None:
         self._weights_path = weights_path
-        self._detector = YOLODetector(weights_path)
+        self._model: Optional[YOLO] = None
 
     def load(self) -> None:
-        self._detector.load()
-        logger.warning(
-            "FireDetector loaded PLACEHOLDER weights (%s): base COCO has no "
-            "fire/smoke classes, so detections will be empty until a real fire "
-            "model is trained or sourced",
-            self._weights_path,
+        """Load the custom fire weights from disk (once per worker process)."""
+        logger.info("loading fire weights from %s", self._weights_path)
+        self._model = YOLO(self._weights_path)
+        logger.info(
+            "fire weights loaded (%s), classes=%s",
+            _MODEL_VERSION,
+            list(self._model.names.values()),
         )
 
     def is_loaded(self) -> bool:
-        return self._detector.is_loaded()
+        return self._model is not None
 
     def predict(self, image_path: str, **options: object) -> InferenceResult:
-        """Run base detection and keep only fire/smoke labels (empty on COCO)."""
-        result = self._detector.predict(image_path, **options)
-        fire = [d for d in result.detections if d["label"] in _FIRE_LABELS]
+        """Detect fire/smoke in the image and return normalized detections."""
+        if self._model is None:
+            raise RuntimeError("FireDetector.predict called before load()")
+
+        confidence = float(options.get("confidence_threshold", _DEFAULT_CONFIDENCE))
+
+        start = time.perf_counter()
+        # verbose=False keeps ultralytics from printing to stdout (we log ourselves).
+        results = self._model.predict(source=image_path, conf=confidence, verbose=False)
+        inference_ms = int((time.perf_counter() - start) * 1000)
+
+        detections = self._extract_detections(results)
         logger.info(
-            "fire detection on %s: %d fire/smoke detection(s) in %d ms",
+            "fire inference on %s: %d detection(s) in %d ms",
             image_path,
-            len(fire),
-            result.inference_ms,
+            len(detections),
+            inference_ms,
         )
         return InferenceResult(
-            detections=fire,
-            inference_ms=result.inference_ms,
+            detections=detections,
+            inference_ms=inference_ms,
             model_version=_MODEL_VERSION,
         )
+
+    @staticmethod
+    def _extract_detections(results: list) -> list[dict]:
+        """Flatten ultralytics Results into ``{label, confidence, bbox}`` dicts."""
+        detections: list[dict] = []
+        for result in results:
+            names = result.names  # class-id -> label ({0: 'fire', 1: 'smoke'})
+            for box in result.boxes:
+                class_id = int(box.cls[0])
+                x1, y1, x2, y2 = box.xyxy[0].tolist()
+                detections.append(
+                    {
+                        "label": names[class_id],
+                        "confidence": round(float(box.conf[0]), 4),
+                        # Pixel coordinates, rounded to ints (SPEC §6 example).
+                        "bbox": [round(x1), round(y1), round(x2), round(y2)],
+                    }
+                )
+        return detections

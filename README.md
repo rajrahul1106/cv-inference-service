@@ -48,7 +48,7 @@ Diagram source: [docs/architecture.mmd](docs/architecture.mmd).
 | API | FastAPI 0.115 (async), Pydantic v2 |
 | Data | PostgreSQL 16, SQLAlchemy 2.0 async, Alembic migrations |
 | Queue | Celery 5.4 on Redis 7.4 (broker + pub/sub) |
-| ML | ultralytics YOLOv8-nano (objects + face), torch |
+| ML | ultralytics YOLOv8-nano (objects + face), YOLOv8s custom-trained (fire + smoke), torch |
 | Real-time | FastAPI WebSockets + Redis pub/sub bridge |
 | Observability | prometheus-client (multiprocess mode), structlog JSON logs |
 | Frontend | React 18, Vite, Tailwind |
@@ -57,7 +57,7 @@ Diagram source: [docs/architecture.mmd](docs/architecture.mmd).
 ## Key Features
 
 - **Async job lifecycle** — `POST` returns `202` immediately; jobs flow queued → processing → completed/failed on worker pools, with retryable failures backed off exponentially with jitter.
-- **Three models, one interface** — YOLOv8 objects, YOLOv8-face, and a (placeholder) fire detector all implement `InferenceModel`; adding a model is one registry entry, task code untouched.
+- **Three models, one interface** — YOLOv8 objects, YOLOv8-face, and a YOLOv8s fire/smoke detector custom-trained on a 12,733-image Roboflow dataset (2 classes: fire, smoke; best validation mAP@0.5: 0.60 fire, 0.46 smoke) all implement `InferenceModel`; adding a model is one registry entry, task code untouched.
 - **Per-process model caching** — models load once per worker process (lazy, fork-safe), not per task: no repeated 1-3 s cold starts.
 - **Real-time updates without polling** — workers publish status to Redis pub/sub; a lifespan-managed subscriber in the API fans events out to WebSocket clients. Workers never know about sockets.
 - **Two input modes** — public image URL or direct multipart upload (validated, size-capped, served back for display).
@@ -82,7 +82,7 @@ Measured with the standardized [Locust](scripts/load_test.py) run ([scripts/run_
 |---|---|---|
 | yolo | 81 ms | 95% of runs ≤ 100 ms warm |
 | face | 39 ms | YOLOv8n-face (pretrained) |
-| fire | 82 ms | YOLOv8 pass + label filter |
+| fire | 82 ms | YOLOv8s custom-trained (fire + smoke) |
 
 Single solo-pool worker completes **~45 jobs/min (≈0.75 jobs/s)** end-to-end — each job includes a network image download. Submission (48 RPS) intentionally outpaces one worker; capacity scales by adding worker replicas (`--concurrency=N` / more containers on Linux). Reproduce with `bash scripts/run_benchmarks.sh`.
 
@@ -170,5 +170,4 @@ Honest limitations of the current iteration:
 - **No multi-tenant isolation** — all jobs share one namespace and one queue.
 - **Single-node deployment** — one Docker Compose host; no k8s manifests, no HA Postgres/Redis.
 - **Python-side model registry** — model routing lives in worker code, not infrastructure (no per-model autoscaling as you'd get from k8s/KServe).
-- **Fire detection is a flagged placeholder** — base YOLOv8 weights + label filter (`model_version: yolov8n-fire-placeholder-v1`); a real fire model swaps in with zero code changes.
 - **No retention/GC** — uploaded images and old job rows accumulate until cleaned manually.
